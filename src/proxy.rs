@@ -116,6 +116,16 @@ pub async fn registry_handler(
         .iter()
         .filter_map(|v| v.to_str().ok().map(str::to_string))
         .collect();
+
+    if auth_header.is_none() {
+        warn!(path, "rejected unauthenticated request");
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "UNAUTHORIZED",
+            "authentication required",
+        );
+    }
+
     match parse_path(remainder) {
         Err(e) => {
             warn!(path, error = %e, "bad request path");
