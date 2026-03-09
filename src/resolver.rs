@@ -1,5 +1,6 @@
 use crate::{cache, circuit_breaker::CircuitBreaker, discovery, discovery::Discoverer, metrics};
 use anyhow::{anyhow, bail, Result};
+use base64::Engine;
 use bytes::Bytes;
 use dashmap::DashMap;
 use futures::stream::{self, StreamExt};
@@ -62,6 +63,8 @@ pub struct Resolver {
     retry_max_attempts: u32,
     retry_base_delay: Duration,
     cache_warmup_top_n: usize,
+    /// Pre-computed Basic auth header for upstream Harbor requests.
+    service_auth: Arc<String>,
 }
 
 impl Resolver {
@@ -82,6 +85,8 @@ impl Resolver {
         retry_max_attempts: u32,
         retry_base_delay: Duration,
         cache_warmup_top_n: usize,
+        harbor_username: &str,
+        harbor_password: &str,
     ) -> Result<Self> {
         // Build an optimized HTTP client for upstream Harbor requests.
         // For 500k RPS, connection reuse is critical.
@@ -107,6 +112,12 @@ impl Resolver {
 
         let client = builder.build()?;
 
+        let service_auth = Arc::new(format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD
+                .encode(format!("{}:{}", harbor_username, harbor_password))
+        ));
+
         Ok(Self {
             discovery,
             cache,
@@ -122,6 +133,7 @@ impl Resolver {
             retry_max_attempts,
             retry_base_delay,
             cache_warmup_top_n,
+            service_auth,
         })
     }
 
@@ -567,7 +579,7 @@ impl Resolver {
         project: &str,
         image: &str,
         reference: &str,
-        auth: Option<&str>,
+        _auth: Option<&str>,
         accept: &[String],
     ) -> Result<ResolveResult> {
         if !discovery::is_safe_project_name(project) {
@@ -582,9 +594,7 @@ impl Resolver {
         );
 
         let mut req = self.client.get(&url);
-        if let Some(a) = auth {
-            req = req.header("Authorization", a);
-        }
+        req = req.header("Authorization", self.service_auth.as_str());
         for a in accept {
             req = req.header("Accept", a.as_str());
         }
@@ -781,7 +791,7 @@ impl Resolver {
         &self,
         project: &str,
         image: &str,
-        auth: Option<&str>,
+        _auth: Option<&str>,
     ) -> Result<ResolveResult> {
         if !discovery::is_safe_project_name(project) {
             bail!(
@@ -792,9 +802,7 @@ impl Resolver {
         let url = format!("{}/v2/{}/{}/tags/list", self.harbor_url, project, image);
 
         let mut req = self.client.get(&url);
-        if let Some(a) = auth {
-            req = req.header("Authorization", a);
-        }
+        req = req.header("Authorization", self.service_auth.as_str());
 
         let resp = req
             .send()
