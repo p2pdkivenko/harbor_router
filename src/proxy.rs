@@ -31,6 +31,7 @@ pub struct AppState {
     pub resolver: Resolver,
     pub harbor_url: Arc<String>,    // Arc to avoid cloning
     pub proxy_project: Arc<String>, // Arc to avoid cloning
+    pub service_auth: Arc<String>,
     /// Dedicated reqwest client tuned for large blob streaming.
     pub blob_client: reqwest::Client,
 }
@@ -40,6 +41,7 @@ impl AppState {
         resolver: Resolver,
         harbor_url: String,
         proxy_project: String,
+        service_auth: Arc<String>,
         http2_prior_knowledge: bool,
         blob_read_timeout: Duration,
     ) -> Result<Arc<Self>> {
@@ -69,6 +71,7 @@ impl AppState {
             resolver,
             harbor_url: Arc::new(harbor_url),
             proxy_project: Arc::new(proxy_project),
+            service_auth,
             blob_client,
         }))
     }
@@ -117,6 +120,16 @@ pub async fn registry_handler(
         .iter()
         .filter_map(|v| v.to_str().ok().map(str::to_string))
         .collect();
+
+    if auth_header.is_none() {
+        warn!(path, "rejected unauthenticated request");
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "UNAUTHORIZED",
+            "authentication required",
+        );
+    }
+
     match parse_path(remainder) {
         Err(e) => {
             warn!(path, error = %e, "bad request path");
@@ -301,7 +314,7 @@ async fn proxy_blob(
     project: &str,
     image: &str,
     digest: &str,
-    auth: Option<&str>,
+    _auth: Option<&str>,
 ) -> Response {
     if !discovery::is_safe_project_name(project) {
         error!(
@@ -320,9 +333,7 @@ async fn proxy_blob(
     );
 
     let mut req = state.blob_client.get(&target_url);
-    if let Some(a) = auth {
-        req = req.header("Authorization", a);
-    }
+    req = req.header("Authorization", state.service_auth.as_str());
 
     match req.send().await {
         Err(e) => {
@@ -360,7 +371,7 @@ async fn probe_blob_project(
     state: &AppState,
     image: &str,
     digest: &str,
-    auth: Option<&str>,
+    _auth: Option<&str>,
 ) -> anyhow::Result<String> {
     let projects = state.resolver.get_discovered_projects();
     if projects.is_empty() {
@@ -368,8 +379,8 @@ async fn probe_blob_project(
     }
 
     let timeout = Duration::from_secs(5);
-    let auth = auth.map(str::to_string);
     let harbor_url = Arc::clone(&state.harbor_url);
+    let service_auth = Arc::clone(&state.service_auth);
 
     let futures: Vec<_> = projects
         .iter()
@@ -378,12 +389,11 @@ async fn probe_blob_project(
             let proj = proj.clone();
             let url = format!("{}/v2/{}/{}/blobs/{}", harbor_url, proj, image, digest);
             let client = state.blob_client.clone();
-            let auth = auth.clone();
+            let service_auth = Arc::clone(&service_auth);
             async move {
-                let mut req = client.head(&url);
-                if let Some(a) = &auth {
-                    req = req.header("Authorization", a.as_str());
-                }
+                let req = client
+                    .head(&url)
+                    .header("Authorization", service_auth.as_str());
                 let result = tokio::time::timeout(timeout, req.send()).await;
                 (proj, result)
             }
