@@ -7,11 +7,11 @@ mod proxy;
 mod resolver;
 
 use anyhow::Result;
-use base64::Engine;
 use axum::{
     extract::ConnectInfo, http::StatusCode, middleware, response::IntoResponse, routing::get,
     Router,
 };
+use base64::Engine;
 use governor::{Quota, RateLimiter};
 use secrecy::ExposeSecret;
 use socket2::{Domain, Protocol, Socket, Type};

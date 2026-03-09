@@ -1084,6 +1084,7 @@ mod tests {
             cache,
             client,
             harbor_url: Arc::new(mock_server_uri.to_string()),
+            service_auth: Arc::new("Basic dGVzdDp0ZXN0".to_string()),
             timeout: Duration::from_secs(5),
             flights: Arc::new(DashMap::new()),
             max_fanout: 50,
@@ -1194,11 +1195,12 @@ mod tests {
     async fn test_fetch_manifest_with_auth() {
         let mock_server = MockServer::start().await;
 
+        // Service auth is always used for upstream requests (not client auth).
         Mock::given(method("GET"))
             .and(path("/v2/dockerhub/nginx/manifests/latest"))
             .and(wiremock::matchers::header(
                 "Authorization",
-                "Bearer token123",
+                "Basic dGVzdDp0ZXN0",
             ))
             .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
             .mount(&mock_server)
@@ -1206,6 +1208,7 @@ mod tests {
 
         let resolver = setup_test_resolver(&mock_server.uri());
 
+        // Client auth is ignored; service_auth from Resolver is sent instead.
         let result = resolver
             .fetch_manifest("dockerhub", "nginx", "latest", Some("Bearer token123"), &[])
             .await
